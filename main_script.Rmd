@@ -1,0 +1,200 @@
+---
+title: "Tidyverse Workshop"
+output:
+  html_document:
+    toc: yes
+    df_print: paged
+  #html_notebook:
+  #  toc: yes
+  #  df_print: paged
+date: "Feb 1, 2024"
+#link-citations: yes
+#bibliography: ref.bib
+---
+
+# Setup
+## Downloads
+[Training Repo, including this file](https://github.com/Lucy-Family-Institute/tidyverse_workshop.git)
+
+[R](https://cran.r-project.org)
+
+[Rstudio IDE](https://www.rstudio.com/products/rstudio/download/)
+
+## Packages
+We'll be using pacman to ensure packages are installed:
+
+```{r, results='hide', message=F, warning=F}
+if (!require("pacman")) install.packages("pacman")
+
+pacman::p_load("tidyverse", "data.table", "MASS", "plotly", "archive")
+
+set.seed(1)
+```
+
+# Data Import
+
+Three packages for import - readr for delimited rectangular files, archive for dealing with remote zips without needing to download (mostly), haven for pulling data that was saved from other systems that have their own specific files types  (SAS, Stata, SPSS).  Both will attempt to guess the types of the data in the file based on structure.
+
+```{r}
+acd <- readr::read_csv(archive_read("https://ucdp.uu.se/downloads/ucdpprio/ucdp-prio-acd-231-csv.zip", file=1))
+acd
+```
+
+If we were instead using the Stata version (.dta) - we could get the same result with haven
+
+```{r}
+acd_stata <-haven::read_dta(archive_read("https://ucdp.uu.se/downloads/ucdpprio/ucdp-prio-acd-231-dta.zip", file = 1))
+acd_stata
+```
+
+Things aren't perfect - you can see that type guessing failed on all the dates for the CSV (not Stata because it interpreted Stata's date storeage).  Brings us to the next topic: cleaning
+
+# Cleaning
+
+```{r}
+acd<-acd %>%
+  mutate(across(contains("date"), lubridate::mdy))
+
+acd
+```
+You'll notice the pipe character (%>%) at the end of the first line in that code block.  What a pipe does is allow you to work on the intermediate results of a series of commands without storing those results in memory and avoiding ugly nested commands.  This is very helpful for long code blocks.  As we'll see later, you can also modify the data and then pipe it to a plotting functions without having to store the modified data.
+
+The pipe I'm using is referred to as the 'magrittr pipe' because it's imported by tidyverse from magrittr.  Prior to R 4.1.0, R had no base pipe function so this is what we used.  As of that version, R includes its own base pipe character (|>).  These seem mostly the same although see [here](https://www.tidyverse.org/blog/2023/04/base-vs-magrittr-pipe/).  If I were learning R today, I would stick with the base pipe but old habits plus backwards compatibility...
+
+Back to data: additional issue - data stores certain things as comma separated strings within a single column.  This type of storage is difficult for analysis.
+
+```{r}
+acd_wide<-acd %>%
+  separate_wider_delim(c(side_a_id, side_b_id), delim=stringr::regex("\\s*+,\\s*+"),
+                       names_sep = "_", too_few = 'align_start')
+acd_wide
+```
+
+A couple things are happening here.  *separate_wider_delim()* splits text fields on a delimiter.  First argument is columns we want to split.  Could also use tidyselect functions here - e.g., *everything()*, *contains()*.  Second argument is the delimiter - what tells where to split the strings.  These strings are split by a comma followed by a whitespace character, but sometimes there are typos like multiple whitespaces.  We can make the argument general with regex - which matches on any number of white spaces on either side of a comma.  If we were confident the delimiters were always the same we could just write delim = ", " (note the space) - but this is more robust to errors. 
+
+Wide data like this is not 'tidy' - each of these columns with made of out the ids are actually different observations of the same variable - the actors.  So we should pivot this data longer to make it tidier.
+
+
+```{r}
+acd_long<-acd_wide %>%
+  pivot_longer(contains(c("side_a_id")), names_to = NULL, values_to = "side_a_id") %>%
+  relocate(side_a_id, .after=conflict_id) %>%
+  pivot_longer(contains(c("side_b_id")), names_to = NULL, values_to = "side_b_id") %>%
+  relocate(side_b_id, .after=side_a_id) %>%
+  filter(!is.na(side_a_id) & !is.na(side_b_id))
+
+acd_long
+```
+
+Pipes are helpful here because we need to do a few things.  First, we need two pivots because we don't want to make side a and and side b into one column.  *pivot_longer()* takes the columns and makes them row observations of the same column.  By default the column names will become a new column titled "name" which contains the name of the column that was pivoted.  Value will hold the value of that column.  We can overwrite these defaults. *relocate()* moves the created columns to new locations in the tibble - the default is first position, but *.before* or *.after* can be used to be more explicit.
+
+# Plotting
+
+First we're going to get some more data - have to do this in two steps as read_rds does not work with the archive functions we were using before.  To prevent unnecessary downloading, I've put the download in an if statement that checks the files in the project directory for the one we need.  As a result, this should download the file once.
+
+```{r}
+if (!"GEDEvent_v23_1.rds" %in% list.files()){
+  archive_extract("https://ucdp.uu.se/downloads/ged/ged231-rds.zip", file=1)
+}
+
+ged<-read_rds("GEDEvent_v23_1.RDS")
+
+ged %>%
+  ggplot(aes(y=best, x=date_end))
+```
+
+This hasn't done anything - why not?  ggplot treats graphics as consisting of two parts: aesthetic mappings and geometric objects.  All we've done is put in the data - this just tells ggplot what variables we are interested in.  If we want to create a graphic, we need to tell if what geometries we want.
+
+```{r}
+ged %>%
+  ggplot(aes(y=best, x=date_end)) +
+  geom_point()
+```
+
+*geom_point()* is a scatterplot.  Notice we've switched to + to move between lines in ggplot rather than a pipe (%>%).  ggplot results aren't piped to each other layers are added to aesthetics.
+
+This is still not great - there's a lot of overlap on the points, outliers are really making the visual hard to see, and it's not very neat.
+
+```{r}
+ged %>%
+  ggplot(aes(y=log(best+1), x=date_end)) +
+  geom_point(alpha=0.2)+
+  theme_bw()
+```
+
+We've done a couple things here - first we've log transformed the data (not ideal for a count but illustrative).  The nice thing here is you can apply the transforms within the data - you don't need to create a new variable within the dataframe or replace the existing one.  Second we've used the alpha parameter to control the opacity of the dots to make it easier to see where they overlap.
+
+Still a lot of data - maybe we want to aggregate in some way
+
+```{r}
+ged %>%
+  group_by(year=year(date_end)) %>%
+  summarize(sum=sum(best)) %>%
+  ggplot(aes(y=sum, x=year)) +
+  geom_line()+
+  theme_bw()
+```
+
+Year cutpoints are a bit rough - is December 31, 2023 more similar to January 1, 2024 or January 1, 2023? We could smooth the data instead.  Default is a GAM with smoothing splines, but you can do others.  Note: loess compute time increases quickly in sample, so will be slow. 
+
+```{r}
+ged %>%
+  ggplot(aes(y=best, x=date_end)) +
+  geom_smooth()+
+  theme_bw()
+```
+```{r}
+ged %>%
+  ggplot(aes(y=best, x=date_end)) +
+  geom_smooth(method=c("lm"))+
+  theme_bw()
+```
+
+## Faceting
+```{r}
+ged %>%
+  ggplot(aes(y=best, x=date_end)) +
+  geom_smooth(method=c("lm"))+
+  facet_grid(~region)+
+  theme_bw()
+```
+
+## Distributions
+```{r}
+hist<-ged %>%
+  ggplot(aes(date_start))+
+  geom_histogram(binwidth = function(x) 2 * IQR(x) / (length(x)^(1/3)))+
+  theme_bw()
+
+hist
+```
+
+Unlike the line plots, the histogram has performed an intermediate calculation that's hidden, but can be extracted
+
+```{r}
+layer_data(hist)
+```
+
+This is a bit confusing because our times are stored as POSIX which is harder to read as it's a count of seconds since the beginning of 1970.  We can convert back:
+
+```{r}
+layer_data(hist) %>%
+  mutate(xmin = as_datetime(xmin),
+         xmax = as_datetime(xmax))
+```
+
+This is better - we can see that the first bin in our histogram has edges at October 31, 1988 and March 11, 1989 and contained 496 events.
+
+```{r}
+ged %>%
+  ggplot(aes(date_start))+
+  geom_histogram(binwidth = function(x) 2 * IQR(x) / (length(x)^(1/3)))+
+  theme_bw()+
+  facet_wrap(~region)
+
+```
+
+There are a lot of packages that aren't part of the tidyverse but built to integrate with it.  For example, the plotly R package can convert your ggplot figures into interactive plotly figures. 
+```{r}
+ggplotly(hist)
+```
