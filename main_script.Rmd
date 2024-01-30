@@ -24,7 +24,7 @@ date: "Feb 1, 2024"
 We'll be using pacman to ensure packages are installed:
 
 ```{r, results='hide', message=F, warning=F}
-if (!require("pacman")) install.packages("pacman")
+if (!require("pacman")) install.packages("pacman", repos = "https://cloud.r-project.org")
 
 pacman::p_load("tidyverse", "data.table", "skimr", "plotly", "archive", "scales")
 
