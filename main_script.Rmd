@@ -26,7 +26,7 @@ We'll be using pacman to ensure packages are installed:
 ```{r, results='hide', message=F, warning=F}
 if (!require("pacman")) install.packages("pacman")
 
-pacman::p_load("tidyverse", "data.table", "MASS", "plotly", "archive")
+pacman::p_load("tidyverse", "data.table", "skimr", "plotly", "archive", "scales")
 
 set.seed(1)
 ```
@@ -47,21 +47,74 @@ acd_stata <-haven::read_dta(archive_read("https://ucdp.uu.se/downloads/ucdpprio/
 acd_stata
 ```
 
-Things aren't perfect - you can see that type guessing failed on all the dates for the CSV (not Stata because it interpreted Stata's date storeage).  Brings us to the next topic: cleaning
+Things aren't perfect - you can see that type idetnification failed on all the dates for the Stata file - but not the CSV.  Interestingly, this seems to be because the authors incorrectly stored the Stata variables as strings instead of dates so readr accepted the Stata formatting rather than use its best guess.  You can see when given an unformatted string with the CSV file readr correctly interpreted those as dates.
 
 # Cleaning
 
-```{r}
-acd<-acd %>%
-  mutate(across(contains("date"), lubridate::mdy))
+## Mutate and select
 
-acd
+Let's find all of the date fields and convert them from strings to date:
+
+```{r}
+acd_stata %>%
+  mutate(across(contains("date"), lubridate::ymd))
 ```
-You'll notice the pipe character (%>%) at the end of the first line in that code block.  What a pipe does is allow you to work on the intermediate results of a series of commands without storing those results in memory and avoiding ugly nested commands.  This is very helpful for long code blocks.  As we'll see later, you can also modify the data and then pipe it to a plotting functions without having to store the modified data.
+Some useful things here.  First, *mutate()* is the syntax for creating columns from existing columns. *across()* is the syntax for columnwise operations - I would like to apply the to be named function "across" to be selected columns.  For example, *summarize(across(a:c, mean))* would return the mean of columns named a and c, as well as any columns in between.  However, we need a more complicated selection - we want all the date columns.  We could simply name them - i.e.,
+
+```{r}
+acd_stata %>%
+  mutate(across(c(start_date, start_date2, ep_end_date), lubridate::ymd)) %>%
+  dplyr::select(contains("date"))
+```
+(I've added the final selector line to save having to look for the correct columns).  But this is more tedious and error prone.  If column names follow a known pattern - all date columns contain the word date, for example, we can use a *contains()*, which checks whether the name of the variable contains a provided substring, like date.
+
+The final parameter is the format of the date.  If you've used base R for dates before, then you might recognize something like this:
+
+```{r}
+acd_stata %>%
+  mutate(across(c(start_date, start_date2, ep_end_date), function(x) as.Date(x, format="%Y-%m-%d"))) %>%
+  dplyr::select(contains("date"))
+```
+This is using R's base *as.Date()* function.  This is unnecessarily complicated as you have to specify using symbolic notation how your dates are formatted.  Here, we have %Y for four digit year, followed by %m for numeric month and finally %d for numeric day.  All of these are separated by hyphens, because that's how our dates are written.  Because we're mixing tidyverse and base, we have to specify a function call inside the mutate - i.e. I'm defining a function that takes an input x, and applies the base R conversion.
+
+Base date conversions fail if you don't specify things correctly:
+
+```{r}
+acd_stata %>%
+  mutate(across(c(start_date, start_date2, ep_end_date), function(x) as.Date(x, format="%y-%m-%d"))) %>%
+  dplyr::select(contains("date"))
+```
+What's different here? I used %y which is the notation for a two digit year.  Our dates to not match the specified format so conversion fails.  The lubridate package, which is part of tidyverse, has better functions for date conversion.  Specifically *ymd()* works for any dates that are any year/month/day format -  even those without standard delimiters.
+
+```{r}
+test_dates <- data.frame(date=c("1990-April-10", "90/04/10", "1990 4 10", "1990 April 10", "1990April10"))
+test_dates %>%
+  mutate(date = ymd(date))
+```
+
+## Pipes
+You'll notice the pipe character (%>%) throughout the above.  A pipe allows you to work on the intermediate results of a series of commands without storing those results in memory or using ugly nested commands.  This is very helpful for long code blocks.  As we'll see later, you can also modify the data and then pipe it to a plotting functions without having to store the modified data.
+
+For example, in the below code block there are three steps.  First we call the dataframe we want to operate on, here acd_stata.  Then we pipe that object to mutate.  Notice if we were thinking like base R this would fail - I haven't attached acd_stata but I've called variables from it without telling R where to look - e.g. acd_stata$start_date. But, since we've piped acd_stata to the mutate call, it's understood that those variables are in acd_stata.
+
+The third step takes the resulting dataframe, with the correctly parsed dates, and selects some columns from it.  The intermediate result, with the correct dates but all columns is never stored anywhere.  If we were to store the results of this block, it would be a tibble with three columns.
+
+```{r}
+acd_stata %>%
+  mutate(across(c(start_date, start_date2, ep_end_date), lubridate::ymd)) %>%
+  dplyr::select(contains("date"))
+```
 
 The pipe I'm using is referred to as the 'magrittr pipe' because it's imported by tidyverse from magrittr.  Prior to R 4.1.0, R had no base pipe function so this is what we used.  As of that version, R includes its own base pipe character (|>).  These seem mostly the same although see [here](https://www.tidyverse.org/blog/2023/04/base-vs-magrittr-pipe/).  If I were learning R today, I would stick with the base pipe but old habits plus backwards compatibility...
 
+## separate_wider, pivot_longer, and a little bit of stringr with regex
 Back to data: additional issue - data stores certain things as comma separated strings within a single column.  This type of storage is difficult for analysis.
+
+```{r}
+acd %>%
+  arrange(desc(nchar(side_b_id))) %>%
+  dplyr::select(side_a, side_b, side_b_id)
+```
 
 ```{r}
 acd_wide<-acd %>%
@@ -70,7 +123,7 @@ acd_wide<-acd %>%
 acd_wide
 ```
 
-A couple things are happening here.  *separate_wider_delim()* splits text fields on a delimiter.  First argument is columns we want to split.  Could also use tidyselect functions here - e.g., *everything()*, *contains()*.  Second argument is the delimiter - what tells where to split the strings.  These strings are split by a comma followed by a whitespace character, but sometimes there are typos like multiple whitespaces.  We can make the argument general with regex - which matches on any number of white spaces on either side of a comma.  If we were confident the delimiters were always the same we could just write delim = ", " (note the space) - but this is more robust to errors. 
+A couple things are happening here.  *separate_wider_delim()* splits text fields on a delimiter.  First argument is columns we want to split.  Could also use tidyselect functions here - e.g., *everything()*, *contains()*.  Second argument is the delimiter - where to split the strings.  These strings are split by a comma followed by a whitespace character, but sometimes there are typos like multiple whitespaces.  We can make the argument general with regex - which matches on any number of white spaces on either side of a comma.  If we were confident the delimiters were always the same we could just write delim = ",_" (_ is a placeholder whitespace, in reality it would be a space but markdown won't render it) - but this is more robust to errors. 
 
 Wide data like this is not 'tidy' - each of these columns with made of out the ids are actually different observations of the same variable - the actors.  So we should pivot this data longer to make it tidier.
 
@@ -88,7 +141,36 @@ acd_long
 
 Pipes are helpful here because we need to do a few things.  First, we need two pivots because we don't want to make side a and and side b into one column.  *pivot_longer()* takes the columns and makes them row observations of the same column.  By default the column names will become a new column titled "name" which contains the name of the column that was pivoted.  Value will hold the value of that column.  We can overwrite these defaults. *relocate()* moves the created columns to new locations in the tibble - the default is first position, but *.before* or *.after* can be used to be more explicit.
 
-# Plotting
+We could (and should) have done this in one step, but I wanted you to see pivot.
+
+```{r}
+acd %>%
+  separate_longer_delim(side_a_id,  delim=stringr::regex("\\s*+,\\s*+")) %>%
+  separate_longer_delim(side_b_id,  delim=stringr::regex("\\s*+,\\s*+")) %>%
+  relocate(side_a_id, side_b_id, .after=conflict_id)
+```
+
+## stringr
+
+We used stringr briefly above, but stringr is tidyverse's package for string data.  stringr has a number of nice functions that all start with *str_*
+
+### Lookup 
+Here we can pull everything with the word Sudan in location
+```{r}
+acd %>%
+  filter(str_detect(location, "Sudan"))
+```
+### Substitute
+Or we could replace strings
+
+```{r}
+acd %>%
+  mutate(location = str_replace_all(location, "South Sudan", "S. Sudan")) %>%
+  filter(str_detect(location, "Sudan"))
+
+```
+
+# Descriptive Statistics
 
 First we're going to get some more data - have to do this in two steps as read_rds does not work with the archive functions we were using before.  To prevent unnecessary downloading, I've put the download in an if statement that checks the files in the project directory for the one we need.  As a result, this should download the file once.
 
@@ -98,12 +180,71 @@ if (!"GEDEvent_v23_1.rds" %in% list.files()){
 }
 
 ged<-read_rds("GEDEvent_v23_1.RDS")
+```
 
+Tidyverse has a number of useful ways to generate descriptive statistics.  It's worth noting that these usually transform the data so don't overwrite the existing objects with the summaries.  First we can start with *glimpse()* which does what you'd think:
+
+```{r}
+glimpse(ged)
+```
+
+We can get summary statistics for the numeric variables
+```{r}
+ged %>% 
+  summarize(across(where(is.numeric), median))
+```
+We could build this out into a full table, but unnecessary as packages exist for this (technically not tidyverse, but integrated).  This is skimr:
+
+```{r}
+skim(ged)
+```
+
+*group_by()* allows the calculation of all statistics by group.  For example, if we wanted counts by region:
+```{r}
+ged %>% 
+  group_by(region) %>%
+  count()
+```
+
+# More cleaning - factors
+
+As is common in social science data, this data has a lot of categorical (factor) variables stored as numeric.  For example, we have a five level date precision variable around the recorded date of the event in the data: 
+
+```{r}
+ged %>%
+  dplyr::select(date_prec) %>%
+  group_by(date_prec) %>%
+  count()
+```
+
+If you look in the codebook, these values correspond with an estimate of the uncertainty, with 1 being exact and 5 being sometime more than a month but less than a year.  We can convert this with the base *as.factor()*, but tidyverse has some useful functions out of the forcats package for categorical variables, like *fct_recode* which recodes the levels in the data:
+
+```{r}
+ged<-ged %>% 
+  mutate(date_prec = fct_recode(as.factor(date_prec), 
+                                "Exact" = "1",
+                                "2-6 days" = "2",
+                                "Week" = "3",
+                                "Month" = "4",
+                                "More than 1 Month, Less than 1 Year" = "5"))
+
+ged %>%
+  group_by(date_prec) %>%
+  count()
+```
+
+Note that the syntax here is "new name" = "old name," which is standard across tidyverse functions.
+
+# Plotting
+
+ggplot2 is the tidyverse plotting package.  
+
+```{r}
 ged %>%
   ggplot(aes(y=best, x=date_end))
 ```
 
-This hasn't done anything - why not?  ggplot treats graphics as consisting of two parts: aesthetic mappings and geometric objects.  All we've done is put in the data - this just tells ggplot what variables we are interested in.  If we want to create a graphic, we need to tell if what geometries we want.
+This hasn't done anything - why not?  ggplot treats graphics as consisting of two parts: aesthetic mappings and geometric objects.  Unlike base R, where different functions imply different plots (*plot()* vs *hist()*), all ggplot plots start from this same aesthetic.  All we've done is put in the data - this just tells ggplot what variables we are interested in.  If we want to create a graphic, we need to tell if what geometries we want.
 
 ```{r}
 ged %>%
@@ -111,7 +252,7 @@ ged %>%
   geom_point()
 ```
 
-*geom_point()* is a scatterplot.  Notice we've switched to + to move between lines in ggplot rather than a pipe (%>%).  ggplot results aren't piped to each other layers are added to aesthetics.
+*geom_point()* is a scatter plot.  Notice we've switched to + to move between lines in ggplot rather than a pipe (%>%).  ggplot results aren't piped to each other layers are added to aesthetics.
 
 This is still not great - there's a lot of overlap on the points, outliers are really making the visual hard to see, and it's not very neat.
 
@@ -159,7 +300,104 @@ ged %>%
   theme_bw()
 ```
 
-## Distributions
+## Bar Plot
+Here's a basic bar plot
+```{r}
+ged %>%
+  ggplot(aes(date_prec))+
+  geom_bar()
+```
+
+If we wanted to see by region we could pass that as the fill variable.  *scale_fill_viridis()* changes the color pallet.  The default is different colors that do not exhibit significant variation in hue/saturation.  As a result they can be difficult for readers with colorblindness or journals that still print in greyscale.  Note that the default position is stacked.  This is ok, but the smaller categories are hard to read.
+
+```{r}
+ged %>%
+  ggplot(aes(date_prec, fill=region))+
+  geom_bar()+
+  scale_fill_viridis_d()+
+  theme_bw()
+```
+
+To switch from stacked change the position option:
+```{r}
+ged %>%
+  ggplot(aes(date_prec, fill=region))+
+  geom_bar(position="dodge")+
+  scale_fill_viridis_d()+
+  theme_bw()
+```
+
+If we facet this by precision we can use free scales to see things better.  The risk of free scales is that a quick reader will assume they're the same. Here, we might think most of Africa's events have precision worse than 2-6 days, but in reality almost 88% are Exact or 2-6 days.  Comparison is only valid within the facet - e.g., Africa has more events at week, month, and greater precision than other regions. 
+
+```{r}
+ged %>%
+  ggplot(aes(region, fill=region))+
+  geom_bar(position="dodge")+
+  scale_fill_viridis_d()+
+  facet_wrap(~date_prec, scales="free")+
+  theme_bw()
+```
+
+Getting there, but we have some bad labels and an unecessary legend!
+
+```{r}
+final_bar<-ged %>%
+  ggplot(aes(region, fill=region))+
+  geom_bar(position="dodge")+
+  scale_fill_viridis_d(guide="none")+
+  labs(x="Region", y="Number of Events")+
+  facet_wrap(~date_prec, nrow=3,
+             scales="free", labeller = labeller(date_prec = label_wrap_gen(25)))+
+  scale_x_discrete(labels = label_wrap(10)) +
+  theme_bw()
+
+final_bar
+```
+
+And we might want to save this one
+
+```{r}
+ggsave(final_bar, file="barplot.pdf", width = 6, height =6, units="in")
+```
+
+The precision variable is ordinal - meaning it the ordering of the values has meaning.  For nominal variables forcats + ggplot allows some nice reordering:
+
+```{r}
+ged %>% 
+  ggplot(aes(region))+
+  geom_bar()+
+  coord_flip()+
+  theme_bw()
+```
+
+For region, there's no real meaning - Europe is not intrinsically closer to Asia than Africa.  So why not rearrange to make things prettier?
+
+```{r}
+ged %>% 
+  ggplot(aes(fct_rev(fct_infreq(region))))+
+  geom_bar()+
+  coord_flip()+
+  theme_bw()
+```
+
+Last thing about *geom_bar()* - the default is a count of observations *stat="count"*, so it only accepts one option via *aes()* either x or y.  You can override this using the *function* option,  but it's a bit clunky.  My preference is to create the stat you want to plot prior and then pipe it into ggplot. This gives you more control and you only need to remember one option *stat="identity"* which plots whatever you've supplied as y.
+
+Let's say you want to check for monthly seasonality across regions, but you only want the data where we are certain of the date.  First, you filter based on date_prec, then group by the month and region.  Next you use summarize to create a mean variable.  That variable - avg - gets passed to ggplot as y.  Finally, you change the stat for geom_bar to "identity."  Note that if you don't change the stat it'll error out. 
+
+```{r}
+ged %>%
+  filter(date_prec=="Exact") %>%
+  group_by(month = lubridate::month(date_end, label=T), region) %>%
+  summarize(avg=mean(best)) %>%
+  ggplot(aes(y=avg, x=month))+
+  geom_bar(stat = "identity")+
+  facet_wrap(~region, scales = "free", nrow=3)+
+  theme_bw()
+```
+## Histograms
+
+Here's a basic histogram.  Note within the histogram function we've applied a calculation for optimal binwidth.  If not ggplot picks 30 bins and complains. 
+
 ```{r}
 hist<-ged %>%
   ggplot(aes(date_start))+
@@ -197,4 +435,5 @@ ged %>%
 There are a lot of packages that aren't part of the tidyverse but built to integrate with it.  For example, the plotly R package can convert your ggplot figures into interactive plotly figures. 
 ```{r}
 ggplotly(hist)
+ggplotly(final_bar)
 ```
