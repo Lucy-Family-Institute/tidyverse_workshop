@@ -394,6 +394,7 @@ ged %>%
   facet_wrap(~region, scales = "free", nrow=3)+
   theme_bw()
 ```
+
 ## Histograms
 
 Here's a basic histogram.  Note within the histogram function we've applied a calculation for optimal binwidth.  If not ggplot picks 30 bins and complains. 
