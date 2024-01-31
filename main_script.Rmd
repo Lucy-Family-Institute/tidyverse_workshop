@@ -118,7 +118,9 @@ acd %>%
 
 ```{r}
 acd_wide<-acd %>%
-  separate_wider_delim(c(side_a_id, side_b_id), delim=stringr::regex("\\s*+,\\s*+"),
+  arrange(desc(nchar(side_b_id))) %>%
+  separate_wider_delim(c(side_a_id, side_b_id),
+                       delim=stringr::regex("\\s*+,\\s*+"),
                        names_sep = "_", too_few = 'align_start')
 acd_wide
 ```
@@ -145,8 +147,11 @@ We could (and should) have done this in one step, but I wanted you to see pivot.
 
 ```{r}
 acd %>%
-  separate_longer_delim(side_a_id,  delim=stringr::regex("\\s*+,\\s*+")) %>%
-  separate_longer_delim(side_b_id,  delim=stringr::regex("\\s*+,\\s*+")) %>%
+  arrange(desc(nchar(side_b_id))) %>%
+  separate_longer_delim(side_a_id, 
+                        delim=stringr::regex("\\s*+,\\s*+")) %>%
+  separate_longer_delim(side_b_id,
+                        delim=stringr::regex("\\s*+,\\s*+")) %>%
   relocate(side_a_id, side_b_id, .after=conflict_id)
 ```
 
@@ -172,7 +177,7 @@ acd %>%
 
 # Descriptive Statistics
 
-First we're going to get some more data - have to do this in two steps as read_rds does not work with the archive functions we were using before.  To prevent unnecessary downloading, I've put the download in an if statement that checks the files in the project directory for the one we need.  As a result, this should download the file once.
+First we're going to get some more data - have to do this in two steps as *read_rds()* does not work with the archive functions we were using before.  To prevent unnecessary downloading, I've put the download in an if statement that checks the files in the project directory for the one we need.  As a result, this should download the file once.
 
 ```{r}
 if (!"GEDEvent_v23_1.rds" %in% list.files()){
@@ -217,7 +222,7 @@ ged %>%
   count()
 ```
 
-If you look in the codebook, these values correspond with an estimate of the uncertainty, with 1 being exact and 5 being sometime more than a month but less than a year.  We can convert this with the base *as.factor()*, but tidyverse has some useful functions out of the forcats package for categorical variables, like *fct_recode* which recodes the levels in the data:
+If you look in the codebook, these values correspond with an estimate of the uncertainty, with 1 being exact and 5 being sometime more than a month but less than a year.  We can convert this with the base *as.factor()*, but tidyverse has some useful functions out of the forcats package for categorical variables, like *fct_recode()* which recodes the levels in the data:
 
 ```{r}
 ged<-ged %>% 
@@ -244,7 +249,7 @@ ged %>%
   ggplot(aes(y=best, x=date_end))
 ```
 
-This hasn't done anything - why not?  ggplot treats graphics as consisting of two parts: aesthetic mappings and geometric objects.  Unlike base R, where different functions imply different plots (*plot()* vs *hist()*), all ggplot plots start from this same aesthetic.  All we've done is put in the data - this just tells ggplot what variables we are interested in.  If we want to create a graphic, we need to tell if what geometries we want.
+This hasn't done anything - why not?  ggplot treats graphics as consisting of two parts: aesthetic mappings and geometric objects.  Unlike base R, where different functions imply different plots (*plot()* vs *hist()*), all ggplot plots start from this same aesthetic.  All we've done is put in the data - this just tells ggplot what variables we are interested in.  If we want to create a graphic, we need to tell it what geometries we want.
 
 ```{r}
 ged %>%
@@ -252,7 +257,7 @@ ged %>%
   geom_point()
 ```
 
-*geom_point()* is a scatter plot.  Notice we've switched to + to move between lines in ggplot rather than a pipe (%>%).  ggplot results aren't piped to each other layers are added to aesthetics.
+*geom_point()* is a scatter plot.  Notice we've switched to + to move between lines in ggplot rather than a pipe (%>%).  ggplot results aren't piped to each other; layers are added to aesthetics.
 
 This is still not great - there's a lot of overlap on the points, outliers are really making the visual hard to see, and it's not very neat.
 
@@ -270,10 +275,19 @@ Still a lot of data - maybe we want to aggregate in some way
 ```{r}
 ged %>%
   group_by(year=year(date_end)) %>%
-  summarize(sum=sum(best)) %>%
+  summarize(sum=sum(best)/10^3) %>%
   ggplot(aes(y=sum, x=year)) +
   geom_line()+
+  labs(x="Year", y="Fatalities (Thousands)")
   theme_bw()
+```
+
+Here we've created an intermediate step with data summed over year:
+
+```{r}
+ged %>%
+  group_by(year=year(date_end)) %>%
+  summarize(sum=sum(best)/10^3)
 ```
 
 Year cutpoints are a bit rough - is December 31, 2023 more similar to January 1, 2024 or January 1, 2023? We could smooth the data instead.  Default is a GAM with smoothing splines, but you can do others.  Note: loess compute time increases quickly in sample, so will be slow. 
@@ -292,6 +306,8 @@ ged %>%
 ```
 
 ## Faceting
+
+Faceting applies the same procedure over subgroups of the data defined by a variable.  
 ```{r}
 ged %>%
   ggplot(aes(y=best, x=date_end)) +
@@ -360,7 +376,7 @@ And we might want to save this one
 ggsave(final_bar, file="barplot.pdf", width = 6, height =6, units="in")
 ```
 
-The precision variable is ordinal - meaning it the ordering of the values has meaning.  For nominal variables forcats + ggplot allows some nice reordering:
+The precision variable is ordinal - meaning the ordering of the values has meaning.  Reording precision doesn't make sense except maybe to reverse it so higher values indicate 'higher' precision.  For nominal variables forcats + ggplot allows some nice reordering:
 
 ```{r}
 ged %>% 
@@ -380,7 +396,7 @@ ged %>%
   theme_bw()
 ```
 
-Last thing about *geom_bar()* - the default is a count of observations *stat="count"*, so it only accepts one option via *aes()* either x or y.  You can override this using the *function* option,  but it's a bit clunky.  My preference is to create the stat you want to plot prior and then pipe it into ggplot. This gives you more control and you only need to remember one option *stat="identity"* which plots whatever you've supplied as y.
+Last thing about *geom_bar()* - the default is a count of observations (*stat="count"*), so it only accepts one option via *aes()* either x or y.  You can override this using the *function* option,  but it's a bit clunky.  My preference is to create the stat you want to plot prior and then pipe it into ggplot. This gives you more control and you only need to remember one option *stat="identity"* which plots whatever you've supplied as y.
 
 Let's say you want to check for monthly seasonality across regions, but you only want the data where we are certain of the date.  First, you filter based on date_prec, then group by the month and region.  Next you use summarize to create a mean variable.  That variable - avg - gets passed to ggplot as y.  Finally, you change the stat for geom_bar to "identity."  Note that if you don't change the stat it'll error out. 
 
@@ -393,6 +409,15 @@ ged %>%
   geom_bar(stat = "identity")+
   facet_wrap(~region, scales = "free", nrow=3)+
   theme_bw()
+```
+
+Here again it might be useful to see what the data looks like before we pipe to ggplot:
+
+```{r}
+ged %>%
+  filter(date_prec=="Exact") %>%
+  group_by(month = lubridate::month(date_end, label=T), region) %>%
+  summarize(avg=mean(best))
 ```
 
 ## Histograms
@@ -424,6 +449,7 @@ layer_data(hist) %>%
 
 This is better - we can see that the first bin in our histogram has edges at October 31, 1988 and March 11, 1989 and contained 496 events.
 
+We can also facet this plot.  Note that the binwidth calculation is redone for each facet, so the binwidths are optimal within the group.  
 ```{r}
 ged %>%
   ggplot(aes(date_start))+
@@ -436,5 +462,5 @@ ged %>%
 There are a lot of packages that aren't part of the tidyverse but built to integrate with it.  For example, the plotly R package can convert your ggplot figures into interactive plotly figures. 
 ```{r}
 ggplotly(hist)
-ggplotly(final_bar)
+ggplotly(final_bar, width=800, height=800)
 ```
