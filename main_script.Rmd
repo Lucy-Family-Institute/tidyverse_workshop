@@ -278,7 +278,7 @@ ged %>%
   summarize(sum=sum(best)/10^3) %>%
   ggplot(aes(y=sum, x=year)) +
   geom_line()+
-  labs(x="Year", y="Fatalities (Thousands)")
+  labs(x="Year", y="Fatalities (Thousands)")+
   theme_bw()
 ```
 
